@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Composer Cost Meter",
+    "description": "Shows this turn's spend, the session's running spend, and the DeepSeek account balance in the row under the composer."
+  }
+}
