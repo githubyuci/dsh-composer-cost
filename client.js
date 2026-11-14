@@ -187,6 +187,36 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* The conversation-scoped probe owns the live numbers; the root-scoped
+       sidebar control reads them through this tiny store. */
+    const liveCost = {
+      value: null,
+      listeners: new Set(),
+      publish(next) {
+        this.value = next;
+        for (const listener of [...this.listeners]) listener();
+      },
+      subscribe(listener) {
+        this.listeners.add(listener);
+        return () => {
+          this.listeners.delete(listener);
+        };
+      },
+      get() {
+        return this.value;
+      },
+    };
+
+    /* Portal keeps the popover outside the sidebar's clipping column; without
+       react-dom it still renders, anchored in the cell. */
+    const ReactDOMGuarded = (() => {
+      try {
+        return require('react-dom');
+      } catch {
+        return null;
+      }
+    })();
+
     const STYLE = `
 .ccost-anchor{order:5;font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));display:inline-flex;min-width:0}
 .ccost-pill{box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;padding:1px 8px;max-width:100%;border:none;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-tertiary);font:inherit;font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;cursor:default}
@@ -201,6 +231,18 @@ window.__ModuleLoader__.load({
 .ccost-fbtn-rail{padding:0}
 .ccost-fbtn-label{max-width:104px;overflow:hidden;text-overflow:ellipsis}
 .ccost-fbtn[data-balance="none"]{color:var(--dsw-alias-state-idle-primary)}
+.ccost-wrap{position:relative;display:inline-flex}
+.ccost-pop{position:fixed;z-index:90;box-sizing:border-box;padding:12px;border-radius:12px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 12px 32px rgba(0,0,0,.16);color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;text-align:left}
+.ccost-pop-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
+.ccost-pop-t{font-weight:600}
+.ccost-pop-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:3px 0}
+.ccost-pop-k{color:var(--dsw-alias-label-secondary)}
+.ccost-pop-v{font-variant-numeric:tabular-nums;font-weight:600}
+.ccost-pop-sub{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.ccost-pop-sep{height:1px;background:var(--dsw-alias-border-l1);margin:8px 0 6px}
+.ccost-pop-acts{display:flex;gap:8px;margin-top:10px}
+.ccost-pop-btn{flex:1;height:26px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm,6px);background:0 0;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer}
+.ccost-pop-btn:hover{background:var(--dsw-alias-bg-layer-2)}
 `;
 
     function appendStyle() {
@@ -249,33 +291,12 @@ window.__ModuleLoader__.load({
       ctx.effect(appendStyle, 'composer cost: styles');
       const t = ctx.locale.bind(NS);
 
-      const CostPill = React.memo(function CostPill({ useChat, useProjection }) {
+      /* Headless probe: mounted with the conversation, publishes the live
+         readings for the sidebar foot, renders nothing. */
+      const CostProbe = function CostProbe({ useChat, useProjection }) {
         if (typeof useChat !== 'function' || typeof useProjection !== 'function') return null;
         const nodes = useChat((snapshot) => snapshot.legacy.nodes);
         const usage = useProjection('tokenUsage');
-        const [balance, setBalance] = React.useState(null);
-        const stamp =
-          usage === undefined || usage === null
-            ? 0
-            : (Number(usage.outputTokens) || 0) +
-              (Number(usage.uncachedInputTokens) || 0) +
-              (Number(usage.cacheReadTokens) || 0);
-
-        React.useEffect(() => {
-          let alive = true;
-          const read = () => {
-            void readBalance(ctx).then((value) => {
-              if (alive) setBalance(value);
-            });
-          };
-          read();
-          const ticker = setInterval(read, 60000);
-          return () => {
-            alive = false;
-            clearInterval(ticker);
-          };
-        }, [stamp]);
-
         const turn = turnReading(nodes);
         const session = sessionReading(nodes, usage);
         const now = Date.now();
@@ -283,118 +304,200 @@ window.__ModuleLoader__.load({
         const sessionTariff = tariffFor(session.model, now);
         const turnCost = costOf(turn.tokens, turnTariff);
         const sessionCost = costOf(session.tokens, sessionTariff);
-        const wallet = primaryWallet(balance);
+        React.useEffect(() => {
+          liveCost.publish({ turn, session, turnTariff, sessionTariff, turnCost, sessionCost });
+        }, [turn.steps, session.steps, turnCost, sessionCost, turn.time, session.model]);
+        return null;
+      };
 
-        if (turn.steps === 0 && session.steps === 0 && wallet === null) return null;
+      ctx.slots.inject('conversation.composer.dock', () =>
+        ctx.slots.register(
+          { name: 'conversation.composer.dock', id: 'cost', order: 2 },
+          CostProbe,
+        ),
+      );
 
-        const parts = [
-          t('line.turn', { value: money(turnCost) }),
-          t('line.session', { value: money(sessionCost) }),
-        ];
-        if (wallet !== null) parts.push(t('line.balance', { value: walletLine(wallet) }));
+      /* Sidebar foot: the one place for every reading. The 32px cell matches its
+         neighbours, shows the balance inline, and opens the full panel. */
+      const FooterBalance = React.memo(function FooterBalance({ wide }) {
+        const [reading, setReading] = React.useState({ ready: false, value: null, at: 0 });
+        const [busy, setBusy] = React.useState(true);
+        const [open, setOpen] = React.useState(false);
+        const [pos, setPos] = React.useState(null);
+        const [cost, setCost] = React.useState(() => liveCost.get());
+        const btnRef = React.useRef(null);
+        const panelRef = React.useRef(null);
 
+        React.useEffect(() => liveCost.subscribe(() => setCost(liveCost.get())), []);
+
+        const refresh = React.useCallback(() => {
+          setBusy(true);
+          return readBalance(ctx).then((value) => {
+            setReading({ ready: true, value, at: Date.now() });
+            setBusy(false);
+            return value;
+          });
+        }, []);
+
+        React.useEffect(() => {
+          refresh();
+          const ticker = setInterval(refresh, 120000);
+          return () => clearInterval(ticker);
+        }, [refresh]);
+
+        React.useEffect(() => {
+          if (!open) return undefined;
+          const place = () => {
+            const node = btnRef.current;
+            if (node === null) return;
+            const rect = node.getBoundingClientRect();
+            const width = 292;
+            setPos({
+              left: Math.max(8, Math.min(rect.left - 8, window.innerWidth - width - 8)),
+              bottom: Math.max(8, window.innerHeight - rect.top + 8),
+              width,
+            });
+          };
+          const outside = (event) => {
+            if (btnRef.current !== null && btnRef.current.contains(event.target)) return;
+            if (panelRef.current !== null && panelRef.current.contains(event.target)) return;
+            setOpen(false);
+          };
+          const escape = (event) => {
+            if (event.key === 'Escape') setOpen(false);
+          };
+          place();
+          window.addEventListener('resize', place);
+          window.addEventListener('scroll', place, true);
+          document.addEventListener('pointerdown', outside, true);
+          document.addEventListener('keydown', escape);
+          return () => {
+            window.removeEventListener('resize', place);
+            window.removeEventListener('scroll', place, true);
+            document.removeEventListener('pointerdown', outside, true);
+            document.removeEventListener('keydown', escape);
+          };
+        }, [open]);
+
+        const wallet = primaryWallet(reading.value);
+        const wallets = allWallets(reading.value);
+        const label =
+          wallet !== null ? walletLine(wallet) : reading.ready ? t('action.unknown') : t('action.loading');
         const tier = (tariff) => t(tariff.peak ? 'tier.peak' : 'tier.off');
-        const tokens = (bucket) =>
+        const tokensOf = (bucket) =>
           t('details.tokens', {
             miss: count(bucket.miss),
             hit: count(bucket.hit),
             write: count(bucket.write),
             out: count(bucket.out),
           });
-        const wallets = allWallets(balance);
-        const title = [
-          `${t('details.turn')}\n${tokens(turn.tokens)}\n${t('details.tariff', {
-            tier: tier(turnTariff),
-            model: turn.model ?? t('model.default'),
-          })} — ${money(turnCost)}`,
-          `${t('details.session')}\n${tokens(session.tokens)}\n${t('details.tariff', {
-            tier: tier(sessionTariff),
-            model: session.model ?? t('model.default'),
-          })} — ${money(sessionCost)}`,
-          wallets.length > 0
-            ? `${t('details.wallets')}\n${wallets.map(walletLine).join(' · ')}`
-            : t('details.noAccount'),
-          t('details.pricing'),
-        ].join('\n\n');
+        const row = (label_, value_, key_) =>
+          h(
+            'div',
+            { className: 'ccost-pop-row', key: key_ },
+            h('span', { className: 'ccost-pop-k' }, label_),
+            h('span', { className: 'ccost-pop-v' }, value_),
+          );
+        const note = (text_, key_) => h('div', { className: 'ccost-pop-sub', key: key_ }, text_);
+
+        const rows = [];
+        if (cost === null) {
+          rows.push(note(t('pop.noSession'), 'no-session'));
+        } else {
+          rows.push(row(t('details.turn'), money(cost.turnCost), 'turn'));
+          rows.push(
+            note(
+              `${tokensOf(cost.turn.tokens)} · ${t('pop.tariff', {
+                tier: tier(cost.turnTariff),
+                model: cost.turn.model ?? t('model.default'),
+              })}`,
+              'turn-note',
+            ),
+          );
+          rows.push(row(t('details.session'), money(cost.sessionCost), 'session'));
+          rows.push(
+            note(
+              `${tokensOf(cost.session.tokens)} · ${t('pop.tariff', {
+                tier: tier(cost.sessionTariff),
+                model: cost.session.model ?? t('model.default'),
+              })}`,
+              'session-note',
+            ),
+          );
+        }
+
+        const panel = open
+          ? h(
+              'div',
+              {
+                ref: panelRef,
+                className: 'ccost-pop',
+                role: 'dialog',
+                'aria-label': t('pop.title'),
+                style: pos ?? { visibility: 'hidden' },
+              },
+              h(
+                'div',
+                { className: 'ccost-pop-h' },
+                h('span', { className: 'ccost-pop-t' }, t('pop.title')),
+                h(
+                  'span',
+                  { className: 'ccost-pop-sub' },
+                  busy
+                    ? t('action.loading')
+                    : reading.at > 0
+                      ? t('pop.updated', { time: new Date(reading.at).toLocaleTimeString() })
+                      : t('action.unknown'),
+                ),
+              ),
+              rows,
+              h('div', { className: 'ccost-pop-sep' }),
+              row(t('details.wallets'), wallet === null ? t('action.unknown') : walletLine(wallet), 'wallet'),
+              wallets.length > 1 ? note(wallets.map(walletLine).join(' · '), 'wallet-note') : null,
+              h(
+                'div',
+                { className: 'ccost-pop-acts' },
+                h(
+                  'button',
+                  { type: 'button', className: 'ccost-pop-btn', onClick: () => void refresh() },
+                  busy ? t('action.loading') : t('pop.refresh'),
+                ),
+                h(
+                  'button',
+                  { type: 'button', className: 'ccost-pop-btn', onClick: () => void openUsage(ctx) },
+                  t('pop.usage'),
+                ),
+              ),
+            )
+          : null;
 
         return h(
           'span',
-          { className: 'ccost-anchor', style: { order: 5 }, 'data-composer-stat': 'cost' },
-          h('span', { className: 'ccost-pill', title, role: 'status' }, ICON, joined(parts)),
-        );
-      });
-
-      ctx.slots.inject('conversation.composer.dock', () =>
-        ctx.slots.register(
-          { name: 'conversation.composer.dock', id: 'cost', order: 2 },
-          CostPill,
-        ),
-      );
-
-      /* Sidebar foot: one compact balance control beside Settings. The cell keeps
-         the 32px footprint of its neighbours, shows the amount only while the
-         column is wide, and never touches the update badge seat. */
-      const BalanceAction = React.memo(function BalanceAction({ wide }) {
-        const [reading, setReading] = React.useState({ ready: false, value: null });
-        const [busy, setBusy] = React.useState(true);
-
-        React.useEffect(() => {
-          let alive = true;
-          const read = () => {
-            void readBalance(ctx).then((value) => {
-              if (!alive) return;
-              setReading({ ready: true, value });
-              setBusy(false);
-            });
-          };
-          read();
-          const ticker = setInterval(read, 120000);
-          return () => {
-            alive = false;
-            clearInterval(ticker);
-          };
-        }, []);
-
-        const wallet = primaryWallet(reading.value);
-        const wallets = allWallets(reading.value);
-        const label =
-          wallet !== null ? walletLine(wallet) : reading.ready ? t('action.unknown') : t('action.loading');
-        const title =
-          wallet !== null
-            ? `${t('action.wallets')}\n${wallets.map(walletLine).join(' · ')}\n\n${t('action.openUsage')}`
-            : reading.ready
-              ? t('action.unknownHint')
-              : t('action.loading');
-
-        const onClick = () => {
-          if (busy) return;
-          setBusy(true);
-          void readBalance(ctx).then((value) => {
-            setReading({ ready: true, value });
-            setBusy(false);
-            void openUsage(ctx);
-          });
-        };
-
-        return h(
-          'button',
-          {
-            type: 'button',
-            className: wide ? 'ccost-fbtn' : 'ccost-fbtn ccost-fbtn-rail',
-            title,
-            'aria-label': `${t('action.label')} ${label}`,
-            'data-balance': wallet === null ? 'none' : 'ready',
-            onClick,
-          },
-          ICON,
-          wide ? h('span', { className: 'ccost-fbtn-label' }, label) : null,
+          { className: 'ccost-wrap' },
+          h(
+            'button',
+            {
+              ref: btnRef,
+              type: 'button',
+              className: wide ? 'ccost-fbtn' : 'ccost-fbtn ccost-fbtn-rail',
+              title: wallet !== null ? walletLine(wallet) : t('action.unknownHint'),
+              'aria-haspopup': 'dialog',
+              'aria-expanded': open,
+              'aria-label': `${t('action.label')} ${label}`,
+              'data-balance': wallet === null ? 'none' : 'ready',
+              onClick: () => setOpen(!open),
+            },
+            ICON,
+            wide ? h('span', { className: 'ccost-fbtn-label' }, label) : null,
+          ),
+          ReactDOMGuarded !== null && panel !== null ? ReactDOMGuarded.createPortal(panel, document.body) : panel,
         );
       });
 
       ctx.slots.inject('sidebar.footer.action', () =>
         ctx.slots.register(
           { name: 'sidebar.footer.action', id: 'balance', order: 10, label: () => t('action.label') },
-          BalanceAction,
+          FooterBalance,
         ),
       );
     }
@@ -419,6 +522,12 @@ window.__ModuleLoader__.load({
       'action.unknownHint': 'Balance unavailable (not signed in, or the read failed).',
       'action.wallets': 'Wallets',
       'action.openUsage': 'Click to refresh the balance and open the usage page.',
+      'pop.title': 'Cost & balance',
+      'pop.updated': 'updated {time}',
+      'pop.refresh': 'Refresh',
+      'pop.usage': 'Usage page',
+      'pop.noSession': 'Open a conversation to see this turn and the session total.',
+      'pop.tariff': '{tier} · {model}',
     };
 
     const zh = {
@@ -435,6 +544,18 @@ window.__ModuleLoader__.load({
       'details.wallets': '账号钱包',
       'details.noAccount': '余额读取不到（未登录，或请求失败）。',
       'details.pricing': '单价按 DeepSeek 官网人民币价目；高峰时段为北京时间周一至周五 09:00–12:00、14:00–18:00。',
+      'action.label': '余额',
+      'action.loading': '…',
+      'action.unknown': '—',
+      'action.unknownHint': '余额读取不到（未登录，或请求失败）。',
+      'action.wallets': '钱包',
+      'action.openUsage': '点击刷新余额并打开用量页面。',
+      'pop.title': '花费与余额',
+      'pop.updated': '更新于 {time}',
+      'pop.refresh': '刷新',
+      'pop.usage': '用量页',
+      'pop.noSession': '打开一个会话才能看到本轮花费与会话累计。',
+      'pop.tariff': '{tier} · {model}',
     };
 
     return {
