@@ -1,6 +1,6 @@
 {
   "name": "dsh-composer-cost",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "DeepSeek Harness plugin: this turn's spend, the session total, and the DeepSeek account balance in one sidebar-foot control.",

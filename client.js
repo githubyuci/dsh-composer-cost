@@ -233,6 +233,8 @@ window.__ModuleLoader__.load({
 .ccost-fbtn svg{flex:none;width:14px;height:14px}
 .ccost-fbtn-rail{padding:0}
 .ccost-fbtn-label{max-width:104px;overflow:hidden;text-overflow:ellipsis}
+.ccost-fbtn-sum{width:168px;max-width:100%;padding:0 6px;justify-content:center;font-size:11px;letter-spacing:.1px}
+.ccost-fbtn-sum .ccost-fbtn-label{max-width:none;width:100%;text-align:center}
 .ccost-fbtn[data-balance="none"]{color:var(--dsw-alias-state-idle-primary)}
 .ccost-wrap{position:relative;display:inline-flex}
 .ccost-pop{position:fixed;z-index:90;box-sizing:border-box;padding:12px;border-radius:12px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 12px 32px rgba(0,0,0,.16);color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;text-align:left}
@@ -375,8 +377,17 @@ window.__ModuleLoader__.load({
 
         const wallet = primaryWallet(reading.value);
         const wallets = allWallets(reading.value);
-        const label =
+        const turnText = cost === null ? t('action.unknown') : money(cost.turnCost);
+        const sessionText = cost === null ? t('action.unknown') : money(cost.sessionCost);
+        const walletText =
           wallet !== null ? walletLine(wallet) : reading.ready ? t('action.unknown') : t('action.loading');
+        const summary = `${turnText} · ${sessionText} · ${walletText}`;
+        const title = [
+          `${t('details.turn')} ${turnText}`,
+          `${t('details.session')} ${sessionText}`,
+          `${t('details.wallets')} ${walletText}`,
+          t('action.openUsage'),
+        ].join(' · ');
         const tier = (tariff) => t(tariff.peak ? 'tier.peak' : 'tier.off');
         const tokensOf = (bucket) =>
           t('details.tokens', {
@@ -473,16 +484,15 @@ window.__ModuleLoader__.load({
             {
               ref: btnRef,
               type: 'button',
-              className: wide ? 'ccost-fbtn' : 'ccost-fbtn ccost-fbtn-rail',
-              title: wallet !== null ? walletLine(wallet) : t('action.unknownHint'),
+              className: wide ? 'ccost-fbtn ccost-fbtn-sum' : 'ccost-fbtn ccost-fbtn-rail',
+              title,
               'aria-haspopup': 'dialog',
               'aria-expanded': open,
-              'aria-label': `${t('action.label')} ${label}`,
+              'aria-label': `${t('action.label')} ${summary}`,
               'data-balance': wallet === null ? 'none' : 'ready',
               onClick: () => setOpen(!open),
             },
-            ICON,
-            wide ? h('span', { className: 'ccost-fbtn-label' }, label) : null,
+            wide ? h('span', { className: 'ccost-fbtn-label' }, summary) : ICON,
           ),
           portalize(panel),
         );
