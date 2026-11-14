@@ -233,10 +233,15 @@ window.__ModuleLoader__.load({
 .ccost-fbtn svg{flex:none;width:14px;height:14px}
 .ccost-fbtn-rail{padding:0}
 .ccost-fbtn-label{max-width:104px;overflow:hidden;text-overflow:ellipsis}
-.ccost-fbtn-sum{width:168px;max-width:100%;padding:0 6px;justify-content:center;font-size:11px;letter-spacing:.1px}
+.ccost-fbtn-sum{width:100%;max-width:none;padding:0 10px;justify-content:stretch;font-size:12px}
 .ccost-fbtn-sum .ccost-fbtn-label{max-width:none;width:100%;text-align:center}
+.ccost-fbtn-cells{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%}
+.ccost-seg{display:inline-flex;align-items:baseline;gap:4px;min-width:0;white-space:nowrap}
+.ccost-seg-k{color:var(--dsw-alias-label-secondary);font-size:12px}
+.ccost-seg-v{font-variant-numeric:tabular-nums;font-weight:600;color:var(--dsw-alias-label-primary);font-size:12px}
 .ccost-fbtn[data-balance="none"]{color:var(--dsw-alias-state-idle-primary)}
 .ccost-wrap{position:relative;display:inline-flex}
+.ccost-wrap-wide{display:flex;width:100%;min-width:0}
 .ccost-pop{position:fixed;z-index:90;box-sizing:border-box;padding:12px;border-radius:12px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);box-shadow:0 12px 32px rgba(0,0,0,.16);color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;text-align:left}
 .ccost-pop-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
 .ccost-pop-t{font-weight:600}
@@ -382,6 +387,11 @@ window.__ModuleLoader__.load({
         const walletText =
           wallet !== null ? walletLine(wallet) : reading.ready ? t('action.unknown') : t('action.loading');
         const summary = `${turnText} · ${sessionText} · ${walletText}`;
+        const segments = [
+          { key: 'turn', k: t('pop.turn'), v: turnText },
+          { key: 'session', k: t('pop.session'), v: sessionText },
+          { key: 'wallet', k: t('pop.wallet'), v: walletText },
+        ];
         const title = [
           `${t('details.turn')} ${turnText}`,
           `${t('details.session')} ${sessionText}`,
@@ -478,7 +488,7 @@ window.__ModuleLoader__.load({
 
         return h(
           'span',
-          { className: 'ccost-wrap' },
+          { className: wide ? 'ccost-wrap ccost-wrap-wide' : 'ccost-wrap' },
           h(
             'button',
             {
@@ -492,7 +502,20 @@ window.__ModuleLoader__.load({
               'data-balance': wallet === null ? 'none' : 'ready',
               onClick: () => setOpen(!open),
             },
-            wide ? h('span', { className: 'ccost-fbtn-label' }, summary) : ICON,
+            wide
+              ? h(
+                  'span',
+                  { className: 'ccost-fbtn-label ccost-fbtn-cells' },
+                  segments.map((seg) =>
+                    h(
+                      'span',
+                      { className: 'ccost-seg', key: seg.key },
+                      h('span', { className: 'ccost-seg-k' }, seg.k),
+                      h('span', { className: 'ccost-seg-v' }, seg.v),
+                    ),
+                  ),
+                )
+              : ICON,
           ),
           portalize(panel),
         );
@@ -532,6 +555,9 @@ window.__ModuleLoader__.load({
       'pop.usage': 'Usage page',
       'pop.noSession': 'Open a conversation to see this turn and the session total.',
       'pop.tariff': '{tier} · {model}',
+      'pop.turn': 'Turn',
+      'pop.session': 'Session',
+      'pop.wallet': 'Balance',
     };
 
     const zh = {
@@ -560,6 +586,9 @@ window.__ModuleLoader__.load({
       'pop.usage': '用量页',
       'pop.noSession': '打开一个会话才能看到本轮花费与会话累计。',
       'pop.tariff': '{tier} · {model}',
+      'pop.turn': '本轮',
+      'pop.session': '会话',
+      'pop.wallet': '余额',
     };
 
     return {
