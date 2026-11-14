@@ -208,7 +208,7 @@ window.__ModuleLoader__.load({
     };
 
     /* Portal keeps the popover outside the sidebar's clipping column; without
-       react-dom it still renders, anchored in the cell. */
+       react-dom it renders inline instead of failing on click. */
     const ReactDOMGuarded = (() => {
       try {
         return require('react-dom');
@@ -217,12 +217,15 @@ window.__ModuleLoader__.load({
       }
     })();
 
+    function portalize(node) {
+      if (node === null || node === undefined) return null;
+      if (ReactDOMGuarded !== null && typeof ReactDOMGuarded.createPortal === 'function') {
+        return ReactDOMGuarded.createPortal(node, document.body);
+      }
+      return node;
+    }
+
     const STYLE = `
-.ccost-anchor{order:5;font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));display:inline-flex;min-width:0}
-.ccost-pill{box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;padding:1px 8px;max-width:100%;border:none;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-tertiary);font:inherit;font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;cursor:default}
-.ccost-pill svg{flex:none;width:14px;height:14px}
-.ccost-label{overflow:hidden;text-overflow:ellipsis;min-width:0}
-.ccost-sep{color:var(--dsw-alias-separator-primary);margin:0 6px}
 .ccost-fbtn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:32px;padding:0 8px;border:none;border-radius:var(--dsw-radius-md,var(--dsw-radius-sm,6px));background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;font-variant-numeric:tabular-nums;line-height:1;white-space:nowrap;cursor:pointer;transition:background-color .12s ease,color .12s ease}
 .ccost-fbtn:hover{background:var(--dsw-alias-bg-layer-2);background:color-mix(in srgb,var(--dsw-alias-label-primary) 9%,transparent);color:var(--dsw-alias-label-primary)}
 .ccost-fbtn:active{background:color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent)}
@@ -276,15 +279,6 @@ window.__ModuleLoader__.load({
         strokeLinejoin: 'round',
       }),
     );
-
-    function joined(parts) {
-      const children = [];
-      parts.forEach((part, index) => {
-        if (index > 0) children.push(h('span', { className: 'ccost-sep', key: `sep:${index}` }, '·'));
-        children.push(h('span', { className: 'ccost-label', key: `part:${index}` }, part));
-      });
-      return children;
-    }
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'composer cost: dictionaries');
@@ -490,7 +484,7 @@ window.__ModuleLoader__.load({
             ICON,
             wide ? h('span', { className: 'ccost-fbtn-label' }, label) : null,
           ),
-          ReactDOMGuarded !== null && panel !== null ? ReactDOMGuarded.createPortal(panel, document.body) : panel,
+          portalize(panel),
         );
       });
 
