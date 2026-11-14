@@ -171,12 +171,36 @@ window.__ModuleLoader__.load({
       }
     }
 
+    async function openUsage(ctx) {
+      let url = 'https://platform.deepseek.com/usage';
+      try {
+        const state = await ctx.remote.account.getState();
+        const links = state !== null && typeof state === 'object' && state.ok === true ? state.value?.links : undefined;
+        if (links !== undefined && typeof links.usageUrl === 'string' && links.usageUrl.length > 0) url = links.usageUrl;
+      } catch {
+        /* keep the public usage page */
+      }
+      try {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      } catch {
+        /* popup refused by the shell */
+      }
+    }
+
     const STYLE = `
 .ccost-anchor{order:5;font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));display:inline-flex;min-width:0}
 .ccost-pill{box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;padding:1px 8px;max-width:100%;border:none;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-tertiary);font:inherit;font-variant-numeric:tabular-nums;line-height:inherit;white-space:nowrap;cursor:default}
 .ccost-pill svg{flex:none;width:14px;height:14px}
 .ccost-label{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .ccost-sep{color:var(--dsw-alias-separator-primary);margin:0 6px}
+.ccost-fbtn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;min-width:32px;padding:0 8px;border:none;border-radius:var(--dsw-radius-md,var(--dsw-radius-sm,6px));background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;font-variant-numeric:tabular-nums;line-height:1;white-space:nowrap;cursor:pointer;transition:background-color .12s ease,color .12s ease}
+.ccost-fbtn:hover{background:var(--dsw-alias-bg-layer-2);background:color-mix(in srgb,var(--dsw-alias-label-primary) 9%,transparent);color:var(--dsw-alias-label-primary)}
+.ccost-fbtn:active{background:color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent)}
+.ccost-fbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ccost-fbtn svg{flex:none;width:14px;height:14px}
+.ccost-fbtn-rail{padding:0}
+.ccost-fbtn-label{max-width:104px;overflow:hidden;text-overflow:ellipsis}
+.ccost-fbtn[data-balance="none"]{color:var(--dsw-alias-state-idle-primary)}
 `;
 
     function appendStyle() {
@@ -306,6 +330,73 @@ window.__ModuleLoader__.load({
           CostPill,
         ),
       );
+
+      /* Sidebar foot: one compact balance control beside Settings. The cell keeps
+         the 32px footprint of its neighbours, shows the amount only while the
+         column is wide, and never touches the update badge seat. */
+      const BalanceAction = React.memo(function BalanceAction({ wide }) {
+        const [reading, setReading] = React.useState({ ready: false, value: null });
+        const [busy, setBusy] = React.useState(true);
+
+        React.useEffect(() => {
+          let alive = true;
+          const read = () => {
+            void readBalance(ctx).then((value) => {
+              if (!alive) return;
+              setReading({ ready: true, value });
+              setBusy(false);
+            });
+          };
+          read();
+          const ticker = setInterval(read, 120000);
+          return () => {
+            alive = false;
+            clearInterval(ticker);
+          };
+        }, []);
+
+        const wallet = primaryWallet(reading.value);
+        const wallets = allWallets(reading.value);
+        const label =
+          wallet !== null ? walletLine(wallet) : reading.ready ? t('action.unknown') : t('action.loading');
+        const title =
+          wallet !== null
+            ? `${t('action.wallets')}\n${wallets.map(walletLine).join(' · ')}\n\n${t('action.openUsage')}`
+            : reading.ready
+              ? t('action.unknownHint')
+              : t('action.loading');
+
+        const onClick = () => {
+          if (busy) return;
+          setBusy(true);
+          void readBalance(ctx).then((value) => {
+            setReading({ ready: true, value });
+            setBusy(false);
+            void openUsage(ctx);
+          });
+        };
+
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: wide ? 'ccost-fbtn' : 'ccost-fbtn ccost-fbtn-rail',
+            title,
+            'aria-label': `${t('action.label')} ${label}`,
+            'data-balance': wallet === null ? 'none' : 'ready',
+            onClick,
+          },
+          ICON,
+          wide ? h('span', { className: 'ccost-fbtn-label' }, label) : null,
+        );
+      });
+
+      ctx.slots.inject('sidebar.footer.action', () =>
+        ctx.slots.register(
+          { name: 'sidebar.footer.action', id: 'balance', order: 10, label: () => t('action.label') },
+          BalanceAction,
+        ),
+      );
     }
 
     const en = {
@@ -322,6 +413,12 @@ window.__ModuleLoader__.load({
       'details.wallets': 'Account wallet',
       'details.noAccount': 'Account balance unavailable (not signed in, or the read failed).',
       'details.pricing': 'Prices follow the DeepSeek list price in CNY; peak hours are Beijing time Mon–Fri 09:00–12:00 and 14:00–18:00.',
+      'action.label': 'Balance',
+      'action.loading': '…',
+      'action.unknown': '—',
+      'action.unknownHint': 'Balance unavailable (not signed in, or the read failed).',
+      'action.wallets': 'Wallets',
+      'action.openUsage': 'Click to refresh the balance and open the usage page.',
     };
 
     const zh = {
